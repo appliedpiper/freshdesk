@@ -1,0 +1,22 @@
+{
+    "configurations": [
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "Run Current TS File",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            // "program": "${file}",
+            // "preLaunchTask": "build-with-aliases",
+            // "outFiles": ["${workspaceFolder}/dist/**/*.js"]
+            "runtimeExecutable": "pnpm",
+            "runtimeArgs": [
+                "tsx"
+            ],
+            "args": [
+                "${file}"
+            ]
+        }
+    ]
+}
