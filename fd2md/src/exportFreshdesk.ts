@@ -2,18 +2,47 @@ import env from '#/lib/env';
 
 import TurndownService from 'turndown';
 import axios from 'axios';
+import pLimit from 'p-limit';
 import * as cheerio from 'cheerio';
+import type { CheerioAPI } from 'cheerio';
 import fs from 'fs-extra';
 import path from 'path';
 
-// Grab Freshdesk API credentials and Domain
+// ////////////////////////////////////////////////
+// Environment variables
+// ////////////////////////////////////////////////
 const API_KEY = env.API_KEY;
 const DOMAIN = env.DOMAIN;
 
+// ///////////////////////////////////////////////
+// Local Output Directories
+// ///////////////////////////////////////////////
 const MD_OUTPUT_DIR = env.MD_OUTPUT_DIR;
 const IMAGE_DIR = env.IMAGE_DIR;
 
+// ///////////////////////////////////////////////
+// Services and utilities initialization
+// ///////////////////////////////////////////////
+
+// Initialize Turndown Service for HTML to Markdown conversion
 const turndown = new TurndownService();
+
+// Axios instance with Freshdesk API credentials
+const api = axios.create({
+  baseURL: `https://${DOMAIN}/api/v2`,
+  auth: {
+    username: API_KEY,
+    password: "X",
+  },
+});
+
+// Enable concurrency control with p-limit
+// to avoid overwhelming the API or network
+
+// Article processing limit
+const articleLimit = pLimit(3);
+// Image Download Limit
+const imageLimit = pLimit(3);
 
 // ////////////////////////////////////////////////
 // Freshdesk Solution Article types
@@ -59,7 +88,7 @@ interface ArticleMapEntry {
 }
 
 // ////////////////////////////////////////////////
-// Article Map
+// Article Map Functions
 // ////////////////////////////////////////////////
 // Map to track article IDs and their corresponding local file paths
 // This will be used to rewrite internal links after all articles are processed
@@ -82,6 +111,8 @@ async function exportArticleMap(articleMap: Map<number, ArticleMapEntry>) {
   // console.log(`Article map exported to ${outputPath}`);
 }
 
+// Function to import the article map from a JSON file
+// This allows us to preserve article ID to file path mappings across runs
 async function importArticleMap(): Promise<Map<number, ArticleMapEntry>> {
   const filePath = path.join(MD_OUTPUT_DIR, "articleMap.json");
   // Load the article map from the JSON file
@@ -94,10 +125,11 @@ async function importArticleMap(): Promise<Map<number, ArticleMapEntry>> {
     ])
   );
 }
+
 // ////////////////////////////////////////////////
 // Remove special characters and spaces
 // ///////////////////////////////////////////////
-function slugify(text: string): string {
+export function slugify(text: string): string {
   return text
     .toLowerCase()
     .replace(/[^\w\d]+/g, "_")
@@ -105,16 +137,10 @@ function slugify(text: string): string {
 }
 
 // ////////////////////////////////////////////////
-// Axios instance with Freshdesk API credentials
-// ///////////////////////////////////////////////
-const api = axios.create({
-  baseURL: `https://${DOMAIN}/api/v2`,
-  auth: {
-    username: API_KEY,
-    password: "X",
-  },
-});
+// Utility functions
+// ////////////////////////////////////////////////
 
+// Function to update internal links to local markdown files
 async function updateInternalLinks(articleMap: Map<number, ArticleMapEntry>) {
   // Map<ArticleID, LocalFilePath>
   const files = await fs.readdir(MD_OUTPUT_DIR, { recursive: true, encoding: "utf-8", });
@@ -152,6 +178,7 @@ async function updateInternalLinks(articleMap: Map<number, ArticleMapEntry>) {
   }
 }
 
+// Function to validate and normalize URLs
 function validateAndNormalizeUrl(
   src: string | undefined,
   domain: string
@@ -181,7 +208,28 @@ function validateAndNormalizeUrl(
     return null;
   }
 }
+// Structure to track image processing results
+type ImageTaskResult =
+  | { img: any; action: "replace"; localPath: string }
+  | { img: any; action: "invalid"; src: string }
+  | { img: any; action: "missing"; src: string };
 
+// Function to update image attributes in the HTML content
+function updateImageAttributes($: CheerioAPI, imageResults: ImageTaskResult[]) {
+  for (const result of imageResults) {
+    if (result.action === "replace") {
+      $(result.img).attr("src", result.localPath);
+    } else if (result.action === "invalid") {
+      console.warn(`Skipping invalid image URL: ${result.src}`);
+      $(result.img).replaceWith(`[Invalid Image URL: ${result.src}]`);
+    } else if (result.action === "missing") {
+      console.warn(`Image skipped due to download failure: ${result.src}`);
+      $(result.img).replaceWith(`[Image Missing: ${result.src}]`);
+    }
+  }
+}
+
+// Function to download an image from a URL and save it locally
 async function downloadImage(url: string, folder: string): Promise<string | null> {
   try {
     // Extract the filename from the URL and create a local path
@@ -211,33 +259,60 @@ async function downloadImage(url: string, folder: string): Promise<string | null
   }
 }
 
+// Function to process an individual article
+// 1) download images
+// 2) convert to markdown
+// 3) save locally
 async function processArticle(article: Article, folderPath: string): Promise<ArticleMapEntry> {
   const $ = cheerio.load(article.description);
+  
+  // Article images are stored in the description field as <img> tags
+  const images = $("img").toArray();
 
   // Download each image from the article and save it locally
-  for (const img of $("img").toArray()) {
-    // Extract image URL
-    const src = $(img).attr("src");
+  const imageTasks: Promise<ImageTaskResult>[] = images.map((img) =>
+    imageLimit(async () => {
+      // Extract image URL
+      const src = $(img).attr("src") ?? "";
 
-    // Validate and normalize the image URL
-    const normalizedUrl = validateAndNormalizeUrl(src, DOMAIN);
-    if (!normalizedUrl) {
-      console.warn(`Skipping invalid image URL: ${src}`);
-      $(img).replaceWith(`[Invalid Image URL: ${src}]`);
-      continue;
-    }
+      // Validate and normalize the image URL
+      const normalizedUrl = validateAndNormalizeUrl(src, DOMAIN);
+      if (!normalizedUrl) {
+        // Avoiding DOM updates in aync loop to prevent conflicts
+        // Update all the image URLs after downloaded
+        return {
+          img,
+          action: "invalid",
+          src
+        };
+      }
 
-    // Download the image and get the local path
-    const localPath = await downloadImage(normalizedUrl, folderPath);
+      // Download the image and get the local path
+      const localPath = await downloadImage(normalizedUrl, folderPath);
 
-    // Update the image src to point to the local path
-    if (localPath) {
-      $(img).attr("src", localPath);
-    } else {
-      console.warn(`Image skipped due to download failure: ${src}`);
-      $(img).replaceWith(`[Image Missing: ${src}]`);
-    }
-  }
+      // Update the image src to point to the local path
+      if (localPath) {
+        // Update the img tag's src attribute to the local path
+        return {
+          img,
+          action: "replace",
+          localPath
+        };
+      } else {
+        // Image failed to download
+        // Explicitly state the missing URL
+        return {
+          img,
+          action: "missing",
+          src
+        };
+      }
+    })
+  );
+  const imageResults = await Promise.all(imageTasks);
+  updateImageAttributes($, imageResults);
+
+
   // Convert the article's HTML content to markdown
   const markdown = turndown.turndown($.html());
   
@@ -249,6 +324,7 @@ async function processArticle(article: Article, folderPath: string): Promise<Art
   // Regex Replace Normalizes markdown links (important on Windows)
   const relativeFilePath = path.relative(MD_OUTPUT_DIR, filePath).replace(/\\/g, "/");
 
+  // Prepend the article title as an H1 header
   const content = `# ${article.title}
 
 ${markdown}
@@ -263,7 +339,9 @@ ${markdown}
     updated_at: article.updated_at
   }
 }
-
+// ////////////////////////////////////////////////
+// Main Export Function
+// ////////////////////////////////////////////////
 async function exportFreshdesk(): Promise<Map<number, ArticleMapEntry>> {
   // Active article map to track article IDs and their corresponding local file paths
   const newMap = new Map<number, ArticleMapEntry>();
@@ -290,6 +368,9 @@ async function exportFreshdesk(): Promise<Map<number, ArticleMapEntry>> {
       // /////////////////////////////////////////////
       // Folder Loop
       // /////////////////////////////////////////////
+      // Potential Optimization: MultiThreaded folder processing with p-limit
+      // Some Freshdesk plans limit the number of API calls per minute
+      // Not sure on ROI of this optimization, Suspect Article processing is the main bottleneck
       for (const folder of folders) {
         const folderSlug = slugify(folder.name);
         const folderPath = path.join(categoryPath, folderSlug);
@@ -306,24 +387,28 @@ async function exportFreshdesk(): Promise<Map<number, ArticleMapEntry>> {
         // /////////////////////////////////////////////
         // Article Loop
         // /////////////////////////////////////////////
-        for (const article of articles) {
-          const existingArticle = existingMap.get(article.id);
+        // for (const article of articles) {
+        const articleTasks = articles.map(article =>
+          articleLimit(async () => {
+            const existingArticle = existingMap.get(article.id);
 
-          // If the article exists in the existing map 
-          // and the updated_at timestamp is the same, skip processing
-          if (existingArticle && existingArticle.updated_at === article.updated_at) {
-            console.log(`Skipping unchanged article: ${category.name} / ${folder.name} / ${article.title}`);
-            // Store the existing article entry in the articleMap to preserve it for link updating
-            newMap.set(article.id, existingArticle);
-            continue;
-          }
+            // If the article exists in the existing map 
+            // and the updated_at timestamp is the same, skip processing
+            if (existingArticle && existingArticle.updated_at === article.updated_at) {
+              console.log(`Skipping unchanged article: ${category.name} / ${folder.name} / ${article.title}`);
+              // Store the existing article entry in the articleMap to preserve it for link updating
+              newMap.set(article.id, existingArticle);
+              return;
+            }
 
-          console.log(`Exporting: ${category.name} / ${folder.name} / ${article.title}`);
-          const articleEntry = await processArticle(article, folderPath);
+            console.log(`Exporting: ${category.name} / ${folder.name} / ${article.title}`);
+            const articleEntry = await processArticle(article, folderPath);
 
-          // Store the article ID and article contents in the articleMap 
-          newMap.set(article.id, articleEntry);
-        }
+            // Store the article ID and article contents in the articleMap 
+            newMap.set(article.id, articleEntry);
+          })
+        );
+        await Promise.all(articleTasks);
       }
     }
     console.log("SUCCESS: Export complete");
@@ -350,19 +435,19 @@ async function exportFreshdesk(): Promise<Map<number, ArticleMapEntry>> {
   return newMap;
 }
 
-// Export Freshdesk articles to markdown files
-// let articleMap = new Map<number, ArticleMapEntry>();
-let articleMap = await exportFreshdesk();
+// // Export Freshdesk articles to markdown files
+// // let articleMap = new Map<number, ArticleMapEntry>();
+// let articleMap = await exportFreshdesk();
 
 
-// Generate a JSON article map for all exported articles (ID, Path, Title, Updated At)
-await exportArticleMap(articleMap);
+// // Generate a JSON article map for all exported articles (ID, Path, Title, Updated At)
+// await exportArticleMap(articleMap);
 
-// Check to see if the article map exists from current export
-if (articleMap.size === 0) {
-  // If not, import the article map from the JSON file
-  articleMap = await importArticleMap();
-}
+// // Check to see if the article map exists from current export
+// if (articleMap.size === 0) {
+//   // If not, import the article map from the JSON file
+//   articleMap = await importArticleMap();
+// }
 
-// Update the internal markdown links
-await updateInternalLinks(articleMap);
+// // Update the internal markdown links
+// await updateInternalLinks(articleMap);
