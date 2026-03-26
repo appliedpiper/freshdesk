@@ -2,10 +2,10 @@
   // Visit https://aka.ms/tsconfig to read more about this file
   "compilerOptions": {
     // File Layout
-    "rootDir": "src",
+    // "rootDir": "src",
     // "composite": true,
     "outDir": "dist",
-    "baseUrl": "",
+    "baseUrl": ".",
     "paths": {      // Path Aliases
       "#/*": ["src/*"], // Maps @src/ to the ./src/ directory
     },
@@ -14,7 +14,7 @@
     "module": "esnext",
     "target": "esnext",
     "moduleResolution": "bundler",
-    "types": ["node","jest"],
+    "types": ["node", "vitest/globals"],
     // For nodejs:
     // "lib": ["esnext"],
     // "types": ["node"],
@@ -47,5 +47,5 @@
     "moduleDetection": "force",
     "skipLibCheck": true,
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
 }
