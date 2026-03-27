@@ -1,5 +1,6 @@
 node_modules/
 coverage/
 dist/
+fixtures/
 .env.local
 .DS_Store

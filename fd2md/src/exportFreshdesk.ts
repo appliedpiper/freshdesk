@@ -51,7 +51,7 @@ const imageLimit = pLimit(3);
 // Categories > Folders > Articles
 
 // Freshdesk Category structure
-interface Category {
+export interface Category {
   id: number;
   name: string;
   // description: string;
@@ -60,7 +60,7 @@ interface Category {
 }
 
 // Freshdesk Folder structure
-interface Folder {
+export interface Folder {
   id: number;
   name: string;
   category_id: number;   // Parent category ID
@@ -70,7 +70,7 @@ interface Folder {
 }
 
 // Freshdesk Article structure
-interface Article {
+export interface Article {
   id: number;
   title: string;
   description: string;
@@ -86,6 +86,18 @@ interface ArticleMapEntry {
   title: string;
   updated_at: string;
 }
+// Dependency Injection Structure for Process Article Function
+interface ProcessArticleDeps {
+  downloadImage: (url: string, folder: string) => Promise<string | null>;
+}
+
+// Dependency Injecttion for exportFreshdesk function
+interface ExportDeps {
+  api: {
+    get: <T>(url: string) => Promise<{ data: T }>;
+  };
+  processArticle: typeof processArticle;
+}
 
 // ////////////////////////////////////////////////
 // Article Map Functions
@@ -95,7 +107,10 @@ interface ArticleMapEntry {
 
 // Function to export the article map to a JSON file
 // Useful for debugging and periodic backups
-async function exportArticleMap(articleMap: Map<number, ArticleMapEntry>) {
+export async function exportArticleMap(
+  articleMap: Map<number, ArticleMapEntry>,
+  outputDir: string = MD_OUTPUT_DIR
+) {
   // Temp Record to convert Map to Object for JSON serialization
   const mapObject: Record<number, ArticleMapEntry> = {};
   
@@ -104,7 +119,7 @@ async function exportArticleMap(articleMap: Map<number, ArticleMapEntry>) {
     mapObject[id] = entry;
   }
 
-  const outputPath = path.join(MD_OUTPUT_DIR, "articleMap.json");
+  const outputPath = path.join(outputDir, "articleMap.json");
 
   // Write the article map to a JSON file with 2 space formatting
   await fs.writeJson(outputPath, mapObject, { spaces: 2 });
@@ -113,8 +128,10 @@ async function exportArticleMap(articleMap: Map<number, ArticleMapEntry>) {
 
 // Function to import the article map from a JSON file
 // This allows us to preserve article ID to file path mappings across runs
-async function importArticleMap(): Promise<Map<number, ArticleMapEntry>> {
-  const filePath = path.join(MD_OUTPUT_DIR, "articleMap.json");
+export async function importArticleMap(
+  inputPath: string = MD_OUTPUT_DIR
+): Promise<Map<number, ArticleMapEntry>> {
+  const filePath = path.join(inputPath, "articleMap.json");
   // Load the article map from the JSON file
   const data = await fs.readJson(filePath);
 
@@ -141,9 +158,12 @@ export function slugify(text: string): string {
 // ////////////////////////////////////////////////
 
 // Function to update internal links to local markdown files
-async function updateInternalLinks(articleMap: Map<number, ArticleMapEntry>) {
+export async function updateInternalLinks(
+  articleMap: Map<number, ArticleMapEntry>,
+  inputDir: string = MD_OUTPUT_DIR
+) {
   // Map<ArticleID, LocalFilePath>
-  const files = await fs.readdir(MD_OUTPUT_DIR, { recursive: true, encoding: "utf-8", });
+  const files = await fs.readdir(inputDir, { recursive: true, encoding: "utf-8", });
 
   for (const file of files) {
     // Skip files that are not markdown
@@ -151,7 +171,7 @@ async function updateInternalLinks(articleMap: Map<number, ArticleMapEntry>) {
 
     
     // Read the markdown file content
-    const fileFullPath = path.join(MD_OUTPUT_DIR, file);
+    const fileFullPath = path.join(inputDir, file);
     console.log(`Updating Local Links: ${fileFullPath}`);
     let fileContent = await fs.readFile(fileFullPath, "utf-8");
 
@@ -168,7 +188,7 @@ async function updateInternalLinks(articleMap: Map<number, ArticleMapEntry>) {
         // Convert the targetPath to a relative path
         const relativePath = path.relative(
           path.dirname(fileFullPath),
-          path.join(MD_OUTPUT_DIR, targetPath)
+          path.join(inputDir, targetPath)
         );
   
         return relativePath.replace(/\\/g, "/"); // Normalize Windows paths
@@ -179,7 +199,7 @@ async function updateInternalLinks(articleMap: Map<number, ArticleMapEntry>) {
 }
 
 // Function to validate and normalize URLs
-function validateAndNormalizeUrl(
+export function validateAndNormalizeUrl(
   src: string | undefined,
   domain: string
 ): string | null {
@@ -263,7 +283,11 @@ async function downloadImage(url: string, folder: string): Promise<string | null
 // 1) download images
 // 2) convert to markdown
 // 3) save locally
-async function processArticle(article: Article, folderPath: string): Promise<ArticleMapEntry> {
+export async function processArticle(
+  article: Article,
+  folderPath: string,
+  deps: ProcessArticleDeps = { downloadImage }
+): Promise<ArticleMapEntry> {
   const $ = cheerio.load(article.description);
   
   // Article images are stored in the description field as <img> tags
@@ -288,7 +312,7 @@ async function processArticle(article: Article, folderPath: string): Promise<Art
       }
 
       // Download the image and get the local path
-      const localPath = await downloadImage(normalizedUrl, folderPath);
+      const localPath = await deps.downloadImage(normalizedUrl, folderPath);
 
       // Update the image src to point to the local path
       if (localPath) {
@@ -342,7 +366,10 @@ ${markdown}
 // ////////////////////////////////////////////////
 // Main Export Function
 // ////////////////////////////////////////////////
-async function exportFreshdesk(): Promise<Map<number, ArticleMapEntry>> {
+export async function exportFreshdesk(
+  deps: ExportDeps = { api, processArticle },
+  outputDir: string = MD_OUTPUT_DIR
+): Promise<Map<number, ArticleMapEntry>> {
   // Active article map to track article IDs and their corresponding local file paths
   const newMap = new Map<number, ArticleMapEntry>();
 
@@ -350,20 +377,20 @@ async function exportFreshdesk(): Promise<Map<number, ArticleMapEntry>> {
   const existingMap = await importArticleMap().catch(() => new Map<number, ArticleMapEntry>());
   
   try {
-    const categories = (await api.get<Category[]>("/solutions/categories")).data;
+    const categories = (await deps.api.get<Category[]>("/solutions/categories")).data;
     // /////////////////////////////////////////////
     // Category Loop
     // /////////////////////////////////////////////
     for (const category of categories) {
       // Create a valid directory name by slugifying the category name
       const categorySlug = slugify(category.name);
-      const categoryPath = path.join(MD_OUTPUT_DIR, categorySlug);
+      const categoryPath = path.join(outputDir, categorySlug);
 
       // Create the category directory if it doesn't exist
       await fs.ensureDir(categoryPath);
 
       // Fetch folders for the category
-      const folders = (await api.get<Folder[]>(`/solutions/categories/${category.id}/folders`)).data;
+      const folders = (await deps.api.get<Folder[]>(`/solutions/categories/${category.id}/folders`)).data;
 
       // /////////////////////////////////////////////
       // Folder Loop
@@ -377,7 +404,9 @@ async function exportFreshdesk(): Promise<Map<number, ArticleMapEntry>> {
 
         await fs.ensureDir(folderPath);
 
-        const articles = (await api.get<Article[]>(`/solutions/folders/${folder.id}/articles`)).data;
+        const articles = (await deps.api.get<Article[]>(`/solutions/folders/${folder.id}/articles`)).data;
+
+        
 
         if (!articles.length) {
           console.log(`Skipping empty folder: ${category.name} / ${folder.name}`);
@@ -402,7 +431,7 @@ async function exportFreshdesk(): Promise<Map<number, ArticleMapEntry>> {
             }
 
             console.log(`Exporting: ${category.name} / ${folder.name} / ${article.title}`);
-            const articleEntry = await processArticle(article, folderPath);
+            const articleEntry = await deps.processArticle(article, folderPath);
 
             // Store the article ID and article contents in the articleMap 
             newMap.set(article.id, articleEntry);
