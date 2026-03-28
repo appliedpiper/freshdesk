@@ -463,20 +463,3 @@ export async function exportFreshdesk(
   }
   return newMap;
 }
-
-// // Export Freshdesk articles to markdown files
-// // let articleMap = new Map<number, ArticleMapEntry>();
-// let articleMap = await exportFreshdesk();
-
-
-// // Generate a JSON article map for all exported articles (ID, Path, Title, Updated At)
-// await exportArticleMap(articleMap);
-
-// // Check to see if the article map exists from current export
-// if (articleMap.size === 0) {
-//   // If not, import the article map from the JSON file
-//   articleMap = await importArticleMap();
-// }
-
-// // Update the internal markdown links
-// await updateInternalLinks(articleMap);

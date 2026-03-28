@@ -7,8 +7,7 @@
     "test": "vitest",
     "test:debug": "vitest --reporter verbose --silent=false",
     "build": "tsc && tsc-alias",
-    "dev": "tsx src/exportFreshdesk.ts",
-    "dev:watch": "tsx watch src/exportFreshdesk.ts"
+    "export": "tsx src/runExport.ts"
   },
   "keywords": [],
   "author": "Eli Scott",
