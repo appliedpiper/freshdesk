@@ -250,7 +250,7 @@ function updateImageAttributes($: CheerioAPI, imageResults: ImageTaskResult[]) {
 }
 
 // Function to download an image from a URL and save it locally
-async function downloadImage(url: string, folder: string): Promise<string | null> {
+export async function downloadImage(url: string, folder: string): Promise<string | null> {
   try {
     // Extract the filename from the URL and create a local path
     const parsed = new URL(url);

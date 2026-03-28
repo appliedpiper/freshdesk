@@ -1,4 +1,11 @@
-import { processArticle } from "#/exportFreshdesk";
+import { processArticle, downloadImage } from "#/exportFreshdesk";
+import fs from "fs-extra";
+import path from "path";
+import { Readable } from "stream";
+import axios from "axios";
+
+// Mock axios
+vi.mock("axios");
 
 describe("processArticle", () => {
   it("processes images and returns map entry", async () => {
@@ -33,6 +40,41 @@ describe("processArticle", () => {
 
     expect(results.length).toBe(100);
   });
+});
 
-  
+describe("downloadImage", () => {
+  const TEST_DIR = path.join(__dirname, "fixtures");
+
+  beforeEach(async () => {
+    await fs.remove(TEST_DIR);
+    await fs.ensureDir(TEST_DIR);
+    vi.clearAllMocks();
+  });
+
+  it("downloads and saves an image", async () => {
+    const mockStream = Readable.from(["fake image content"]);
+
+    (axios as any).mockResolvedValue({
+      data: mockStream,
+    });
+
+    const url = "https://example.com/image.jpg";
+
+    const result = await downloadImage(url, TEST_DIR);
+
+    expect(result).toBeTruthy();
+
+    const filePath = path.join(TEST_DIR, result!);
+    const exists = await fs.pathExists(filePath);
+
+    expect(exists).toBe(true);
+  });
+
+  it("returns null on failure", async () => {
+    (axios as any).mockRejectedValue(new Error("Network error"));
+
+    const result = await downloadImage("https://bad-url.com/img.jpg", TEST_DIR);
+
+    expect(result).toBeNull();
+  });
 });
