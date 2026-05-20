@@ -122,6 +122,7 @@ export async function exportArticleMap(
   const outputPath = path.join(outputDir, "articleMap.json");
 
   // Write the article map to a JSON file with 2 space formatting
+  await fs.remove(outputPath).catch(() => {}); // Remove existing file if it exists to prevent stale data
   await fs.writeJson(outputPath, mapObject, { spaces: 2 });
   // console.log(`Article map exported to ${outputPath}`);
 }
